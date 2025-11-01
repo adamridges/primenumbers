@@ -62,43 +62,62 @@ def tokenize(expression: str) -> List[str]:
     
     return processed_tokens
 
-def parse_expression(tokens: List[str]) -> Union[float, List[Any]]:
+def parse_expression(tokens: List[str], stop_token: str = None) -> Union[float, List[Any]]:
     """Parse the tokens into a nested list structure based on precedence and parentheses."""
     if not isinstance(tokens, list):
         raise TypeError("Tokens must be a list")
         
-    tokens = list(tokens)  # Create a copy to avoid modifying the original
+    # We'll work with the original tokens list and modify it in place
+    # Create a wrapper to handle the token consumption properly
+    token_list = tokens  # Use the original reference
+    
+    def consume_token():
+        if token_list:
+            return token_list.pop(0)
+        return None
+    
+    def peek_token():
+        if token_list:
+            return token_list[0]
+        return None
+    
+    def has_tokens():
+        return len(token_list) > 0
     
     def parse_primary():
-        if not tokens:
-            raise ValueError("Unexpected end of expression")
-        token = tokens.pop(0)
+        if not has_tokens():
+            raise SyntaxError("Unexpected end of expression")
+        token = consume_token()
         if token == '(':
-            expr = parse_expression(tokens)
-            if not tokens or tokens.pop(0) != ')':
-                raise ValueError("Mismatched parentheses")
+            expr = parse_expression(token_list, ')')
+            if not has_tokens() or consume_token() != ')':
+                raise SyntaxError("Mismatched parentheses")
             return expr
         elif token in FUNCTIONS:
-            if not tokens or tokens[0] != '(':
-                raise ValueError(f"Function {token} must be followed by parentheses")
-            tokens.pop(0)  # Remove '('
-            expr = parse_expression(tokens)
-            if not tokens or tokens.pop(0) != ')':
-                raise ValueError("Mismatched parentheses")
+            if not has_tokens() or peek_token() != '(':
+                raise SyntaxError(f"Function {token} must be followed by parentheses")
+            consume_token()  # Remove '('
+            expr = parse_expression(token_list, ')')
+            if not has_tokens() or consume_token() != ')':
+                raise SyntaxError("Mismatched parentheses")
             return [token, expr]
         else:
             try:
                 return float(token)
             except ValueError:
-                raise ValueError(f"Invalid token: {token}")
+                # Check if this could be an unknown function name
+                if token.isalpha():
+                    raise NameError(f"Unknown function: {token}")
+                else:
+                    raise SyntaxError(f"Invalid token: {token}")
     
     def parse_power():
         left = parse_primary()
         # Add a safety check to prevent infinite loops
         max_iterations = 1000
         iterations = 0
-        while tokens and tokens[0] == '^' and iterations < max_iterations:
-            op = tokens.pop(0)
+        while has_tokens() and peek_token() == '^' and (stop_token is None or peek_token() != stop_token) and iterations < max_iterations:
+            op = consume_token()
             right = parse_primary()
             left = [op, left, right]
             iterations += 1
@@ -111,8 +130,8 @@ def parse_expression(tokens: List[str]) -> Union[float, List[Any]]:
         # Add a safety check to prevent infinite loops
         max_iterations = 1000
         iterations = 0
-        while tokens and tokens[0] in '*/' and iterations < max_iterations:
-            op = tokens.pop(0)
+        while has_tokens() and peek_token() in '*/' and (stop_token is None or peek_token() != stop_token) and iterations < max_iterations:
+            op = consume_token()
             right = parse_power()
             left = [op, left, right]
             iterations += 1
@@ -125,19 +144,46 @@ def parse_expression(tokens: List[str]) -> Union[float, List[Any]]:
         # Add a safety check to prevent infinite loops
         max_iterations = 1000
         iterations = 0
-        while tokens and tokens[0] in '+-' and iterations < max_iterations:
-            op = tokens.pop(0)
+        while has_tokens() and peek_token() in '+-' and (stop_token is None or peek_token() != stop_token) and iterations < max_iterations:
+            op = consume_token()
             right = parse_term()
             left = [op, left, right]
             iterations += 1
         if iterations >= max_iterations:
             raise ValueError("Expression too complex or infinite loop detected")
+        # Check if there are remaining tokens that should have been consumed
+        if has_tokens() and (stop_token is None or peek_token() != stop_token):
+            # Check if the next token is a number (indicating missing operator)
+            next_token = peek_token()
+            try:
+                float(next_token)
+                # If we can convert to float, it's a number, so there's a missing operator
+                raise SyntaxError("Missing operator between operands")
+            except ValueError:
+                # Not a number, let it be handled by higher level parsing
+                pass
         return left
     
     return parse_expr()
 
-def evaluate_expression(parsed_expr: Union[float, List[Any]]) -> float:
-    """Evaluate the parsed expression."""
+def evaluate_expression(parsed_expr: Union[float, List[Any], str]) -> float:
+    """Evaluate the parsed expression or string expression."""
+    # If input is a string, tokenize and parse it first
+    if isinstance(parsed_expr, str):
+        if not parsed_expr.strip():
+            raise SyntaxError("Empty expression")
+        tokens = tokenize(parsed_expr)
+        if not tokens:
+            raise SyntaxError("Empty expression")
+        try:
+            parsed_expr = parse_expression(tokens)
+        except ValueError as e:
+            # Check if this is an unknown function error
+            if "Unknown function" in str(e):
+                raise NameError(str(e))
+            else:
+                raise SyntaxError(str(e))
+    
     if isinstance(parsed_expr, (int, float)):
         return float(parsed_expr)
     
@@ -151,7 +197,7 @@ def evaluate_expression(parsed_expr: Union[float, List[Any]]) -> float:
                 except Exception as e:
                     raise ValueError(f"Error in function {func_name}: {str(e)}")
             else:
-                raise ValueError(f"Unknown function: {func_name}")
+                raise NameError(f"Unknown function: {func_name}")
         elif len(parsed_expr) == 3:  # Binary operation
             op, left, right = parsed_expr
             left_val = evaluate_expression(left)
@@ -166,7 +212,7 @@ def evaluate_expression(parsed_expr: Union[float, List[Any]]) -> float:
             elif op == '/':
                 # Edge Case: Handle division by zero
                 if right_val == 0:
-                    raise ValueError("Division by zero")
+                    raise ZeroDivisionError("Division by zero")
                 return left_val / right_val
             elif op == '^':
                 # Edge Case: Handle invalid exponentiation (e.g., negative base with non-integer exponent)
